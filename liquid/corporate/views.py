@@ -6,6 +6,8 @@ from django.core.mail import send_mail
 from corporate.forms import JobForm
 from intranet.models import Member
 from intranet.models import Group
+from django.forms.util import ErrorList
+import settings
 
 
 

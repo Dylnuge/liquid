@@ -30,4 +30,11 @@ def pk_to_title(id):
 @register.filter
 def pk_to_description(id):
    j = Job.objects.get(pk=id)
-   return j.description
+   description =  j.description
+   return description
+
+@register.filter
+def pk_to_postdate(id):
+   j = Job.objects.get(pk=id)
+   timestamp =  j.timestamp
+   return timestamp

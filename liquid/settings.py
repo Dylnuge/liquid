@@ -16,7 +16,7 @@ MANAGERS = ADMINS
 
 DATABASES = {
     'default': {
-        'ENGINE': 'sqlite3', # Add 'postgresql_psycopg2', 'postgresql', 'mysql', 'sqlite3' or 'oracle'.
+        'ENGINE': 'django.db.backends.sqlite3', # Add 'postgresql_psycopg2', 'postgresql', 'mysql', 'sqlite3' or 'oracle'.
         'NAME': os.path.join(SITE_ROOT, 'database'),                      # Or path to database file if using sqlite3.
         'USER': '',                      # Not used with sqlite3.
         'PASSWORD': '',                  # Not used with sqlite3.
@@ -128,10 +128,14 @@ INSTALLED_APPS = (
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
+    'bootstrap-pagination',
 
     'abouta',
     'banks',
     'cal',
+    'corporate',
+    'sigs',
+    'vote',
 
     'intranet',
     'intranet.event_manager',
@@ -139,13 +143,12 @@ INSTALLED_APPS = (
     'intranet.job_manager',
     'intranet.member_database',
     'intranet.chroma',
+    'intranet.resume_manager',
 
-    'sigs',
-    
-    'vote',
 
 
     'bootstrapform',
+
     'utils.django_mailman',
     'south',
   )
@@ -196,9 +199,19 @@ SERVE_STATIC = True
 #AD_CERT_FILE='/path/to/your/cert.txt'
 #AD_DEBUG=True
 #AD_DEBUG_FILE='/path/to/writable/log/file/ldap.debug'
-AUTHENTICATION_BACKENDS = ('utils.ldapauth.ActiveDirectoryGroupMembershipSSLBackend',)
+AUTHENTICATION_BACKENDS = ('utils.ldapauth.ActiveDirectoryGroupMembershipSSLBackend',
+                           'django.contrib.auth.backends.ModelBackend',)
 
-CUSTOM_USER_MODEL = 'intranet.member_manager.models.Member'
+PASSWORD_HASHERS = (
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher',
+    'django.contrib.auth.hashers.BCryptPasswordHasher',
+    'django.contrib.auth.hashers.SHA1PasswordHasher',
+    'django.contrib.auth.hashers.MD5PasswordHasher',
+    'django.contrib.auth.hashers.CryptPasswordHasher',
+)
+
+#CUSTOM_USER_MODEL = 'intranet.member_manager.models.Member'
 
 TEMPLATE_CONTEXT_PROCESSORS = ("django.contrib.auth.context_processors.auth",
 "django.core.context_processors.debug",
@@ -211,11 +224,12 @@ MIDDLEWARE_CLASSES = ('django.middleware.common.CommonMiddleware',
  'django.middleware.csrf.CsrfViewMiddleware',
  'django.contrib.auth.middleware.AuthenticationMiddleware',
  'django.contrib.messages.middleware.MessageMiddleware',
- 'utils.loginmiddleware.RequireLoginMiddleware',
- 'utils.http.Http403Middleware',)
+ 'utils.http.Http403Middleware',
+ 'utils.loginmiddleware.RequireLoginMiddleware',)
  
 LOGIN_REQUIRED_URLS = (
-  r'/intranet/(.*)$',
+  (r'/intranet/(.*)$',True),
+  (r'/corporate/resume/recruiter/(.*)$',False),
 )
 
 
@@ -234,6 +248,12 @@ AD_MEMBERSHIP_REQ=['acm.users']
 AD_CERT_FILE='/path/to/your/cert.txt'
 AD_DEBUG=True
 AD_DEBUG_FILE='/var/log/apache2/ldap.debug'
+
+
+CRON_IPS = ['172.22.32.110']
+
+CRON_PASSWORD = ""
+
 
 try:
   from local_settings import *

@@ -1,12 +1,19 @@
 from django.db import models
-from django.db.models.signals import pre_save,post_save
+from django.db.models.signals import pre_save,post_save,post_delete
 from django.dispatch import receiver
-from django.contrib.auth.models import User
+from django.contrib.auth.models import User, UserManager, Group as DjangoGroup
 import settings
 import datetime
 import ldap
 import logging
+import os
+from django.core.files.storage import FileSystemStorage
+from utils.fields import ContentTypeRestrictedFileField
 from utils.django_mailman.models import List
+from subprocess import check_call
+from django.db.models import Count
+from django.db.models import Q
+from utils.resume_download_helper import generate_resume_download
 
 
 # Create your models here.
@@ -17,9 +24,15 @@ GROUP_DAY_CHOICES = ((0,'Sunday'),(1,'Monday'),(2,'Tuesday'),(3,'Wednesday'),(4,
 GROUP_MEMBER_STATUS_CHOICES = (('active','active'),('inactive','inactive'),('frozen','frozen'))
 GROUP_STATUS_CHOICES = (('active','active'),('inactive','inactive'),('frozen','frozen'))
 
-EVENT_TYPE_CHOICES = (('a','ACM General'),('g','Group'),('d','Department'))
+EVENT_TYPE_CHOICES = (('a','ACM General'),('g','Group'),('d','Department'),('c','Corporate'),('o','Other'))
 
 EMAIL_STATUS_CHOICES = (('defer','Defer'),('approve','Approve'),('discard','Discard'))
+
+RESUME_PERSON_LEVEL = (('u','Undergraduate'),('m','Masters'),('p','PhD'))
+
+RESUME_PERSON_SEEKING = (('f','Full Time'),('i','Internship/Co-op'))
+
+
 
 class Member(User):
    uin = models.CharField(max_length=9,null=True)
@@ -83,6 +96,13 @@ def new_member_post_save(sender, **kwargs):
          v = Vending(user=user,balance=5)
          v.save()
 
+class PreMember(models.Model):
+   first_name = models.CharField(max_length=32)
+   last_name = models.CharField(max_length=32)
+   uin = models.CharField(max_length=9)
+   netid = models.CharField(max_length=16,unique=True)
+   created_at = models.DateTimeField(auto_now_add=True)
+
 class Vending(models.Model):
    user = models.ForeignKey(Member,primary_key=True,db_column='uid')
    balance = models.DecimalField(max_digits=10, decimal_places=2,default=0)
@@ -105,7 +125,7 @@ class Group(models.Model):
    meeting_location = models.CharField(max_length=255,null=True,blank=True)
    url = models.URLField(null=True,blank=True)
    logo = models.URLField(null=True,blank=True)
-   mailing_list = models.EmailField(max_length=60)
+   mailing_list = models.ForeignKey(List)
    status = models.CharField(max_length=255,choices=GROUP_STATUS_CHOICES,default='active')
 
    def __unicode__(self):
@@ -120,6 +140,10 @@ class Group(models.Model):
 
    def active_members(self):
       return self.members.filter(groupmember__status='active').order_by('last_name')
+
+   def subscribe(self,email):
+      if self.mailing_list.public:
+         self.mailing_list.subscribe_email(email)
 
 class GroupMember(models.Model):
    class Meta:
@@ -156,6 +180,14 @@ class Event(models.Model):
    def has_sponsors(self):
       return len(self.sponsors.all()) > 0
 
+   def pretty_time(self):
+      time = self.starttime.strftime('%A, %b %d, %Y %I:%M%p')
+      if self.starttime.date() == self.endtime.date():
+         time += "-%s"%(self.endtime.strftime('%I:%M%p'))
+      else:
+         time += "-%s"%(self.endtime.strftime('%A, %b %d, %Y %I:%M%p'))
+      return time
+
 class Job(models.Model):
    job_title = models.CharField(max_length=255)
    company = models.CharField(max_length=255)
@@ -179,3 +211,262 @@ class Job(models.Model):
       if self.type_intern:
          types.append("Intern/Co-op")
       return ", ".join(types)
+
+class ResumePerson(models.Model):
+   RESUME_PERSON_GRADUATION = []
+
+   current_year = datetime.datetime.now().year
+
+   for i in range(-1,6):
+      RESUME_PERSON_GRADUATION.append((datetime.date(current_year+i, 5, 1),'May %d'%(current_year+i)))
+      RESUME_PERSON_GRADUATION.append((datetime.date(current_year+i, 12, 1),'December %d'%(current_year+i)))
+
+   netid = models.CharField(max_length=255)
+   first_name = models.CharField(max_length=255)
+   last_name = models.CharField(max_length=255)
+   graduation = models.DateField(choices=RESUME_PERSON_GRADUATION)
+   level = models.CharField(max_length=1,choices=RESUME_PERSON_LEVEL)
+   seeking = models.CharField(max_length=1,choices=RESUME_PERSON_SEEKING)
+   created_at = models.DateTimeField(auto_now_add=True)
+   updated_at = models.DateTimeField(auto_now=True)
+   ldap_name = models.CharField(max_length=255)
+
+   def latest_resume(self):
+      return self.resume_set.filter(approved=True).latest('created_at')
+
+   def full_name(self):
+      return "%s, %s"%(self.last_name, self.first_name)
+
+   def acm_member(self):
+      exist_count = Member.objects.filter(username=self.netid).count()
+      if exist_count > 0:
+         return "Yes"
+      else:
+         return "No"
+
+@receiver(pre_save, sender=ResumePerson)
+def new_resume_person(sender, **kwargs):
+   person = kwargs['instance']
+   person.netid = person.netid.lower()
+   if not person.id:
+      l = ldap.initialize('ldap://ldap.uiuc.edu')
+      u = l.search_s('ou=people,dc=uiuc,dc=edu',ldap.SCOPE_SUBTREE,'uid=%s'%person.netid)
+      try:
+         person.ldap_name = u[0][1]['cn'][0]
+      except IndexError:
+         raise ValueError('Bad Netid', 'Not a valid netid')
+
+# Wher to store the resumes
+fs = FileSystemStorage(location=settings.RESUME_STORAGE_LOCATION)
+
+def create_resume_file_name(instance,filename):
+   return "%s/%s-%s.pdf"%(settings.RESUME_STORAGE_LOCATION,
+                          instance.person.netid,
+                          os.urandom(16).encode('hex'))
+
+class Resume(models.Model):
+   person = models.ForeignKey(ResumePerson,null=True)
+   approved = models.BooleanField(default=False)
+   resume = ContentTypeRestrictedFileField(upload_to=create_resume_file_name,
+                                                  storage=fs,
+                                                  content_types=['application/pdf'],
+                                                  max_upload_size=1048576)
+   created_at = models.DateTimeField(auto_now_add=True)
+
+   def thumbnail_location(self):
+      return "%s/thumbnails/%d.png"%(settings.RESUME_STORAGE_LOCATION, self.id)
+
+   def thumbnail_top_location(self):
+      return "%s/thumbnails/%d-top.png"%(settings.RESUME_STORAGE_LOCATION, self.id)
+
+   def generate_thumbnails(self):
+      if not os.path.exists(self.thumbnail_location()) or not os.path.exists(self.thumbnail_top_location()):
+         try:
+            pdf = "%s[0]"%self.resume.path
+            png = self.thumbnail_location()
+            png_top = self.thumbnail_top_location()
+            check_call(["convert", "-quality", "100%", "-resize", "102x132", pdf, png])
+            check_call(["convert", "-quality", "100%", "-resize", "544x704", "-crop", "544x100+0+0", "+repage", pdf, png_top])
+         except:
+            pass
+
+@receiver(post_save, sender=Resume)
+def new_resume(sender, **kwargs):
+   resume = kwargs['instance']
+   resume.generate_thumbnails()
+
+@receiver(post_delete, sender=Resume)
+def delete_resume(sender, **kwargs):
+   resume = kwargs['instance']
+   fs.delete(resume.resume.path)
+   fs.delete(resume.thumbnail_location())
+   fs.delete(resume.thumbnail_top_location())
+   if resume.person.resume_set.count() == 0:
+      resume.person.delete()
+
+class Recruiter(User):
+   expires = models.DateField()
+   objects = UserManager()
+
+@receiver(post_save, sender=Recruiter)
+def new_recruiter(sender, **kwargs):
+   recruiter = kwargs['instance']
+   if recruiter.groups.filter(name='Recruiter').count() == 0:
+      group = DjangoGroup.objects.get(name="Recruiter")
+      recruiter.groups.add(group)
+      recruiter.save()
+
+
+class ResumeDownloadSet(models.Model):
+   owner = models.ForeignKey(User)
+   level = models.CharField(max_length=64,null=True)
+   seeking = models.CharField(max_length=64,null=True)
+   acm = models.NullBooleanField(null=True)
+   graduation_start = models.DateField(null=True)
+   graduation_end = models.DateField(null=True)
+   created_at = models.DateTimeField(auto_now_add=True)
+
+   def get_people(self,extra_filter=None,resume_extra_filter=None):
+      level = None
+      if self.level != None:
+         level = list(self.level)
+
+      seeking = None
+      if self.seeking != None:
+         seeking = list(self.seeking)
+
+      acm = self.acm
+
+      approved_resumes = Resume.objects.filter(approved=True)
+
+      if resume_extra_filter != None:
+         approved_resumes = approved_resumes.filter(resume_extra_filter)
+
+      people = ResumePerson.objects.filter(resume__in=approved_resumes).annotate(resume_count=Count('resume')).filter(resume_count__gt=0)
+
+      if level != None and level != "":
+         people = people.filter(level__in=level)
+
+      if seeking != None and seeking != "":
+         people = people.filter(seeking__in=seeking)
+
+      if self.graduation_start != None:
+         people = people.filter(graduation__gte=self.graduation_start)
+
+      if self.graduation_end != None:
+         people = people.filter(graduation__lte=self.graduation_end)
+
+      if acm == True:
+         netids = Member.objects.all().values_list('username', flat=True)
+         people = people.filter(netid__in=netids)
+
+
+      if extra_filter != None:
+         people = people.filter(extra_filter)
+
+      people = people.order_by('last_name','first_name')
+
+      return people
+
+   def show_undergraduate(self):
+      return self.level != None and self.level.find('u') >= 0
+
+   def show_masters(self):
+      return self.level != None and self.level.find('m') >= 0
+
+   def show_phd(self):
+      return self.level != None and self.level.find('p') >= 0
+
+   def show_full_time(self):
+      return self.seeking != None and self.seeking.find('f') >= 0
+
+   def show_internship(self):
+      return self.seeking != None and self.seeking.find('i') >= 0
+
+   def show_acm(self):
+      return self.acm != None and self.acm
+
+   def generate_download(self):
+      if self.get_new_count() > 0 or self.resumedownload_set.count() == 0:
+         download = ResumeDownload(set=self)
+         download.save()
+      else:
+         download = self.resumedownload_set.latest('created_at')
+      return download
+
+   def get_new_count(self):
+      query = None
+      if self.resumedownload_set.count() > 0:
+         download = self.resumedownload_set.latest('created_at')
+         query = Q(created_at__gt=download.created_at)
+      people = self.get_people(None,query)
+      return people.count()
+
+   def get_display(self):
+      out = []
+      levels = {'u':'Undergraduate','m':'Masters','p':'PhD'}
+      seekings = {'f':'Full Time','i':'Internship/Co-op'}
+      if self.level != None:
+         level_out = []
+         for l in list(self.level):
+            level_out.append(levels[l])
+         out.append(" or ".join(level_out))
+      if self.seeking != None:
+         seeking_out = []
+         for s in list(self.seeking):
+            seeking_out.append(seekings[s])
+         out.append(" or ".join(seeking_out))
+      if self.acm == True:
+         out.append("ACM@UIUC members")
+      if self.graduation_start != None:
+         out.append("Graduating after %s %d"%(self.graduation_start.strftime('%B'),self.graduation_start.year))
+      if self.graduation_end != None:
+         out.append("Graduating before %s %d"%(self.graduation_end.strftime('%B'),self.graduation_end.year))
+   
+      if len(out) == 0:
+         return "All resumes"
+
+      return " and ".join(out)
+
+
+
+class ResumeDownload(models.Model):
+   set = models.ForeignKey(ResumeDownloadSet)
+   created_at = models.DateTimeField(auto_now_add=True)
+
+   def file_path(self):
+      return "%s/packets/%d.pdf"%(settings.RESUME_STORAGE_LOCATION,self.id)
+
+   def diff_file_path(self):
+      return "%s/packets/diff-%d.pdf"%(settings.RESUME_STORAGE_LOCATION,self.id)
+
+   def generate(self):
+      if os.path.exists(self.file_path()):
+         return
+
+      people = self.set.get_people()
+
+      generate_resume_download(people,self.set.get_display(),self.created_at,self.file_path())
+
+
+   def generate_diff(self):
+      if os.path.exists(self.diff_file_path()):
+         return
+
+      query = None
+      interested_set = self.set.resumedownload_set.exclude(id=self.id)
+      if interested_set.count() > 0:
+         download = interested_set.latest('created_at')
+         query = Q(created_at__gt=download.created_at)
+      people = self.set.get_people(None,query)
+
+      generate_resume_download(people,"Only new or updated %s"%self.set.get_display(),self.created_at,self.diff_file_path())
+
+   def update_count(self):
+      query = None
+      interested_set = self.set.resumedownload_set.exclude(id=self.id)
+      if interested_set.count() > 0:
+         download = interested_set.latest('created_at')
+         query = Q(created_at__gt=download.created_at)
+      people = self.set.get_people(None,query)
+      return people.count()

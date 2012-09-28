@@ -23,7 +23,7 @@ if jobs:
    email += "With postings from:\r\n"
 
    for j in jobs:
-      email += j.company + "\r\n"
+      email += "* " + j.company + "\r\n"
 
    email += "\r\n========================================================================\r\n\r\n";
 
@@ -32,12 +32,17 @@ if jobs:
       email += "Company: " + j.company + "\r\n";
       email += "Contact: " + j.contact_name +  ' <' + j.contact_email + '> ' + j.contact_phone + "\r\n"
       email += "Hiring for: " + j.types() + "\r\n"
-      email += "Description:\r\n" + "\r\n".join(wrap(j.description,72)) + "\r\n";
+      description = j.description.split('\n')
+      description_out = ""
+      for d in description:
+         if d != "":
+            description_out += "\r\n".join(wrap(d,72)) + "\r\n"
+      email += "Description:\r\n" + description_out + "\r\n";
       email += "\r\n========================================================================\r\n\r\n";
 
 
    try:
-      send_mail('ACM@UIUC Weekly Job Postings', email, 'ACM Corporate Committee <corporate@acm.uiuc.edu>',['reedlabotz@gmail.com'], fail_silently=False)
+      send_mail('ACM@UIUC Weekly Job Postings', email, 'ACM Corporate Committee <corporate@acm.uiuc.edu>',['jobs-l@acm.uiuc.edu'], fail_silently=False)
       print "Email sent"
       for j in jobs:
          j.sent = True
