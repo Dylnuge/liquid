@@ -5,10 +5,10 @@ from django.core.context_processors import csrf
 from django.db.models import Q
 from django.core.mail import send_mail
 from django.contrib.auth.forms import PasswordChangeForm
-from corporate.resume.forms import ResumePersonForm, ResumeForm, EmailChangeForm
+from corporate.resume.forms import ResumePersonForm, ResumeForm, EmailChangeForm, PreResumePersonForm
 from intranet.models import Member
 from intranet.models import Group
-from intranet.models import ResumePerson, Resume, ResumeDownloadSet, ResumeDownload
+from intranet.models import ResumePerson, Resume, ResumeDownloadSet, ResumeDownload, PreResumePerson
 from django.forms.util import ErrorList
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from utils.group_decorator import group_admin_required
@@ -29,7 +29,6 @@ def student_thanks(request,id):
 
 
 def main(request):
-  print request.user.groups.filter(name='Recruiter').count()
   if request.user.groups.filter(name='Recruiter').count() > 0:
     return HttpResponseRedirect("/corporate/resume/recruiter/")
 
@@ -72,6 +71,31 @@ def main(request):
       'section': "corporate",
     },context_instance=RequestContext(request))
 
+
+def student_rp(request):
+  if request.method == 'POST':
+    pre_resume_person_form = PreResumePersonForm(request.POST)
+
+    if pre_resume_person_form.is_valid():
+      try:
+        rp = ResumePerson.objects.get(netid=pre_resume_person_form.cleaned_data['netid'].lower())
+        messages.add_message(request, messages.ERROR, 'We already have your resume, no need to give it to us today!')  
+        pre_resume_person_form = PreResumePersonForm()
+      except:
+        try:
+          pre_resume_person_form.save()
+          messages.add_message(request, messages.SUCCESS, 'Thanks, your resume will be added.')  
+          pre_resume_person_form = PreResumePersonForm()
+        except ValueError:
+          errors = pre_resume_person_form._errors.setdefault("netid", ErrorList())
+          errors.append(u"Not a valid netid")
+  else:
+    pre_resume_person_form = PreResumePersonForm()
+
+  return render_to_response('corporate/resume/student_rp.html',{
+      'pre_resume_person_form': pre_resume_person_form,
+      'section': "corporate",
+    },context_instance=RequestContext(request))
 
 @group_admin_required(['Corporate','!Recruiter'])  
 def recruiter(request):
@@ -134,7 +158,8 @@ def recruiter_browse(request):
     num_per_page = 50
   else:
     num_per_page = int(num_per_page)
-  paginator = Paginator(people, num_per_page) # Show 50 contacts per page
+  # Show requested number of resumes per page (50 by default)
+  paginator = Paginator(people, num_per_page)
   total_people = paginator.count
 
   page = request.GET.get('page')

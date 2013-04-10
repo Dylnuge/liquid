@@ -88,7 +88,10 @@ Questions? Contact treasurer@acm.uiuc.edu
 Please retain this email for your records.
 
 Thanks,
-ACM@UIUC"""%(u.first_name,u.last_name,u.date_joined.strftime("%a %b %d, %Y %H:%M:%S"))
+ACM@UIUC
+
+
+Approved by: %s"""%(u.first_name,u.last_name,u.date_joined.strftime("%a %b %d, %Y %H:%M:%S"),request.user.username)
       send_mail('Welcome to ACM@UIUC', welcome_msg, 'ACM <acm@uiuc.edu>',[u.email,'treasurer@acm.uiuc.edu'], fail_silently=False)
       return HttpResponseRedirect('/intranet/members/search?q=%s' % u.username) # Redirect after POST
    except ValueError:

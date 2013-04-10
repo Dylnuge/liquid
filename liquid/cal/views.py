@@ -8,10 +8,15 @@ import datetime
 
 # Create your views here.
 def main(request,year=None,month=None,day=None):
-   if year == None:
+   if year is None:
       start_date = datetime.date.today()
+   elif int(year) < 1900 or int(year) > 2100:
+     raise Http404
    else:
-      start_date = datetime.date(int(year),int(month),int(day))
+     try:
+       start_date = datetime.date(int(year),int(month),int(day))
+     except ValueError:
+       raise Http404
    this_week_monday = start_date - datetime.timedelta(days=start_date.weekday())
    two_weeks = this_week_monday + datetime.timedelta(days=14)
    events = Event.objects.filter(endtime__gte=this_week_monday,starttime__lte=two_weeks).order_by('starttime')
@@ -35,9 +40,13 @@ def main(request,year=None,month=None,day=None):
    today_offset = get_offset(datetime.date.today(),this_week_monday,True)
 
    prev_date = this_week_monday - datetime.timedelta(days=7)
-   prev_url =  "/calendar/%d/%d/%d"%(prev_date.year,prev_date.month,prev_date.day)
+   prev_url = None
+   if prev_date.year > 1900:
+     prev_url =  "/calendar/%d/%d/%d"%(prev_date.year,prev_date.month,prev_date.day)
    next_date = this_week_monday + datetime.timedelta(days=7)
-   next_url = "/calendar/%d/%d/%d"%(next_date.year,next_date.month,next_date.day)
+   next_url = None
+   if next_date.year < 2100:
+     next_url = "/calendar/%d/%d/%d"%(next_date.year,next_date.month,next_date.day)
 
    return render_to_response('cal/main.html',{"section":"calendar","events_grouped":events_grouped,"events":events,"today_offset":today_offset,"prev_url":prev_url,"next_url":next_url},context_instance=RequestContext(request))
    
